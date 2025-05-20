@@ -1,473 +1,165 @@
-
 options(digits = 11)
+
+# Load required libraries
 library(gurobi)
+library(ggplot2)
+library(latex2exp)
+library(tidyr)
+library(dplyr)
+
+# Load user-defined functions
 source('ECM_star_function.R')
 source('tau_min_function_2.R')
 source('tau_max_function.R')
 source('CorrelationDataSet.R')
-alpha<-0.25
-p<-.99
-vector_alphas <- c(alpha)
-ext_lambdas <- 30
-grosor_rejilla_lambdas <- 0.1
-vector_lambdas <- seq(0,ext_lambdas,by=grosor_rejilla_lambdas)
-grosor_rejilla_taus <-0.1
-df <- generate_dataset(p,100,80)
-df <- cbind(Intercept=1,df)
-X <- df[,-c(2,13)]
-X <- as.matrix(X)
-y <-  df[,2]
-X_2 <- as.matrix(df[which(df[,13]==2),-c(2,13)])
-y_2 <- df[which(df[,13]==2),2]
-##Computation of MSE*_l:
-constraints_datasets <- list(list())
-constraints_datasets[[1]] <- cbind(y_2,X_2)
-constraints_datasets[[1]] <- as.matrix(constraints_datasets[[1]])
-constraint_number <- length(constraints_datasets)
-Sol_OLS_constraints <- c()
-f0_aux <- ECM_star_function(as.matrix(constraints_datasets[[1]][,-1]), constraints_datasets[[1]][,1])
-ECM_star <- as.numeric(f0_aux[2])
-Sol_OLS_constraints <-as.numeric(f0_aux[3:(ncol(constraints_datasets[[1]][,-1])+2)])
-vector_tauss<-c(50)
-if (is.null(vector_tauss)) {
-  #Computation of tau_min (no dependence on hyperparameters)
-  tau_min <- tau_min_function_2(constraints_datasets, ECM_star) ##REVISAR
-  tau_max_lambda_vector <- tau_max(constraints_datasets,vector_lambdas,alpha)
-  vector_tauss <-  seq(tau_min, max(tau_max_lambda_vector)+2, by=grosor_rejilla_taus)}
-vector_tauss
-j=0
-valorobjetivo <- list()
-betas <- list()
-status_vector <- list()
 
-for (alpha in vector_alphas){
-  for (lambda in vector_lambdas){
-    j=j+1
+run_constrained_lasso <- function(alpha, p = 0.99, ext_lambdas = 30, grid_lambda = 0.1, grid_tau = 0.1, taus = c(50)) {
+  vector_lambdas <- seq(0, ext_lambdas, by = grid_lambda)
+  
+  # Generate dataset
+  df <- generate_dataset(p, 100, 80)
+  df <- cbind(Intercept = 1, df)
+  
+  # Extract design matrix and response
+  X <- as.matrix(df[, -c(2, 13)])
+  y <- df[, 2]
+  
+  # Subset for group 2
+  X_2 <- as.matrix(df[df[, 13] == 2, -c(2, 13)])
+  y_2 <- df[df[, 13] == 2, 2]
+  
+  # Compute baseline MSE for constraints
+  constraints_datasets <- list(as.matrix(cbind(y_2, X_2)))
+  f0_aux <- ECM_star_function(X_2, y_2)
+  ECM_star <- as.numeric(f0_aux[2])
+  
+  # Optimization output containers
+  betas <- list()
+  valorobjetivo <- list()
+  status_vector <- list()
+  j <- 0
+  
+  for (lambda in vector_lambdas) {
+    j <- j + 1
+    betas_aux <- c()
     valorobjetivo_aux <- c()
-    betas_aux <-c()
     status_vector_aux <- c()
-    vector_tauss <- c(50)
-    for (tau in vector_tauss){
+    
+    for (tau in taus) {
+      # Create penalty matrix A (for elastic net penalty)
+      A_aux <- cbind(rep(0, ncol(X) - 1), diag(ncol(X) - 1))
+      A <- cbind(A_aux, -diag(nrow(A_aux)), diag(nrow(A_aux)))
       
-      ## Funcion Objetivo
-      A_aux <- cbind(rep(0,ncol(X)-1), diag(ncol(X)-1)) #Tendra que cambiarse segun el tipo de problema
-      A <- as.matrix(cbind(A_aux, -diag(nrow(A_aux)), diag(nrow(A_aux))))
-      rhs        <- 0
-      sense      <- '='
-      objcon <- (1/nrow(X))*t(y)%*%y
-      matrizcompuesta <- (1/nrow(X))*as.matrix(rbind(cbind(t(X)%*%X+lambda*(1-alpha)*(t(A_aux)%*%A_aux),matrix(rep(0,ncol(X)*2*nrow(A)), ncol=2*nrow(A))),matrix(rep(0, 2*nrow(A)*(ncol(X)+2*nrow(A))),nrow=2*nrow(A))))
-      obj <- c(rep(0, ncol(X)), rep(alpha*lambda, 2*nrow(A))) - (2/nrow(X))*t(y)%*%cbind(X,matrix(rep(0, 2*nrow(A)*nrow(X)),ncol=2*nrow(A)))
-      Q <- matrizcompuesta
-      vtype <- 'C'
-      modelsense <- 'min'
-      modelname <- 'CLassoMatrizId'
-      lb <- c(rep(-Inf,ncol(X)), rep(0,2*nrow(A)))
+      # Objective function components
+      objcon <- (1 / nrow(X)) * t(y) %*% y
+      Q <- (1 / nrow(X)) * rbind(
+        cbind(t(X) %*% X + lambda * (1 - alpha) * (t(A_aux) %*% A_aux),
+              matrix(0, ncol = 2 * nrow(A), nrow = ncol(X))),
+        matrix(0, nrow = 2 * nrow(A), ncol = ncol(X) + 2 * nrow(A))
+      )
+      obj <- c(rep(0, ncol(X)), rep(alpha * lambda, 2 * nrow(A))) -
+        (2 / nrow(X)) * t(y) %*% cbind(X, matrix(0, nrow = nrow(X), ncol = 2 * nrow(A)))
+      
+      # Quadratic constraints
       quadcon <- list()
-      Cuadratica <- list()
-      for (i in 1:length(constraints_datasets)){
-        matrizcompuestarestriccion <- as.matrix(rbind(cbind(t(constraints_datasets[[i]][,-1])%*%constraints_datasets[[i]][,-1],matrix(rep(0,ncol(constraints_datasets[[i]][,-1])*2*nrow(A)), ncol=2*nrow(A))),matrix(rep(0, 2*nrow(A)*(ncol(constraints_datasets[[i]][,-1])+2*nrow(A))),nrow=2*nrow(A))))
-        Cuadratica$Qc[[i]]= (1/nrow(constraints_datasets[[i]][,-1]))*matrizcompuestarestriccion
-        Cuadratica$q[[i]] = -(2/nrow(constraints_datasets[[i]][,-1]))*t(constraints_datasets[[i]][,1])%*%cbind(constraints_datasets[[i]][,-1],matrix(rep(0, 2*nrow(A)*nrow(constraints_datasets[[i]][,-1])),ncol=2*nrow(A)))
-        Cuadratica$rhs[[i]] =  (1+tau)*ECM_star[i] - (1/nrow(constraints_datasets[[i]][,-1]))*t(constraints_datasets[[i]][,1])%*%constraints_datasets[[i]][,1]
-        Cuadratica$sense[[i]] <- '<'
-        
-        quadcon[[i]] <- list(Qc =  Cuadratica$Qc[[i]], q =  as.numeric(Cuadratica$q[[i]]), rhs= Cuadratica$rhs[[i]], sense = Cuadratica$sense[[i]])
+      for (i in seq_along(constraints_datasets)) {
+        data_i <- constraints_datasets[[i]]
+        X_i <- data_i[, -1]
+        y_i <- data_i[, 1]
+        Qc_i <- (1 / nrow(X_i)) * rbind(
+          cbind(t(X_i) %*% X_i, matrix(0, ncol = 2 * nrow(A), nrow = ncol(X_i))),
+          matrix(0, ncol = ncol(X_i) + 2 * nrow(A), nrow = 2 * nrow(A))
+        )
+        q_i <- -(2 / nrow(X_i)) * t(y_i) %*% cbind(X_i, matrix(0, nrow = nrow(X_i), ncol = 2 * nrow(A)))
+        rhs_i <- (1 + tau) * ECM_star - (1 / nrow(X_i)) * t(y_i) %*% y_i
+        quadcon[[i]] <- list(Qc = Qc_i, q = as.numeric(q_i), rhs = rhs_i, sense = "<")
       }
       
-      model <- list(A=A,rhs=rhs,sense=sense,obj=obj, Q=Q, vtype=vtype,modelsense=modelsense, lb=lb, objcon=objcon, quadcon=quadcon)
+      # Define model for Gurobi
+      model <- list(
+        A = A, rhs = 0, sense = "=", obj = obj, Q = Q,
+        vtype = "C", modelsense = "min", lb = c(rep(-Inf, ncol(X)), rep(0, 2 * nrow(A))),
+        objcon = objcon, quadcon = quadcon
+      )
       
+      # Run optimization
       result <- gurobi(model)
       status_vector_aux <- c(status_vector_aux, result$status)
-      
-      
-      valorobjetivo_aux1 <- result$objval
-      betas_aux1 <- result$x[1:ncol(X)]
-      
-      valorobjetivo_aux <- c(valorobjetivo_aux, valorobjetivo_aux1)
-      betas_aux <- rbind(betas_aux, betas_aux1)
+      valorobjetivo_aux <- c(valorobjetivo_aux, result$objval)
+      betas_aux <- rbind(betas_aux, result$x[1:ncol(X)])
     }
     
-    valorobjetivo[[j]] <- valorobjetivo_aux
-    #betas[[j]] <- rbind(matrix(logical(0), nrow=(length(vector_tauss)- length(tauss)), ncol=ncol(X)),betas_aux)
-    #betas[[j]] <- rbind(betas_aux, matrix(logical(0), nrow=(length(vector_tauss)- length(tauss)), ncol=ncol(X)))
     betas[[j]] <- betas_aux
-    status_vector[[j]] <- status_vector_aux
-  }}
-
-lambda <- seq(0,30,by=0.100)
-beta_matrix <- do.call(rbind, betas)
-beta_matrix <- cbind(lambda,beta_matrix[,c(2,3,4)])
-colnames(beta_matrix) <- c("lambda",paste0("beta", 1:3))
-df <- as.data.frame(beta_matrix)
-
-DifEN3 <- abs(df$beta1-df$beta2)
-##ALPHA=0.5
-options(digits = 11)
-library(gurobi)
-path_directory = "C:/Users/jtrec/OneDrive/Desktop/Codigo Jaime/"
-source(paste(path_directory, 'ECM_star_function.R', sep=""))
-source(paste(path_directory, 'tau_min_function_2.R', sep=""))
-source(paste(path_directory, 'tau_max_function.R', sep=""))
-source(paste(path_directory, 'CorrelationDataSet.R', sep=""))
-alpha<-0.5
-p<-.99
-vector_alphas <- c(alpha)
-ext_lambdas <- 30
-grosor_rejilla_lambdas <- 0.1
-vector_lambdas <- seq(0,ext_lambdas,by=grosor_rejilla_lambdas)
-grosor_rejilla_taus <-0.1
-df <- generate_dataset(p,100,80)
-df <- cbind(Intercept=1,df)
-X <- df[,-c(2,13)]
-X <- as.matrix(X)
-y <-  df[,2]
-X_2 <- as.matrix(df[which(df[,13]==2),-c(2,13)])
-y_2 <- df[which(df[,13]==2),2]
-##Computation of MSE*_l:
-constraints_datasets <- list(list())
-constraints_datasets[[1]] <- cbind(y_2,X_2)
-constraints_datasets[[1]] <- as.matrix(constraints_datasets[[1]])
-constraint_number <- length(constraints_datasets)
-Sol_OLS_constraints <- c()
-f0_aux <- ECM_star_function(as.matrix(constraints_datasets[[1]][,-1]), constraints_datasets[[1]][,1])
-ECM_star <- as.numeric(f0_aux[2])
-Sol_OLS_constraints <-as.numeric(f0_aux[3:(ncol(constraints_datasets[[1]][,-1])+2)])
-vector_tauss<-c(50)
-if (is.null(vector_tauss)) {
-  #Computation of tau_min (no dependence on hyperparameters)
-  tau_min <- tau_min_function_2(constraints_datasets, ECM_star) ##REVISAR
-  tau_max_lambda_vector <- tau_max(constraints_datasets,vector_lambdas,alpha)
-  vector_tauss <-  seq(tau_min, max(tau_max_lambda_vector)+2, by=grosor_rejilla_taus)}
-vector_tauss
-j=0
-valorobjetivo <- list()
-betas <- list()
-status_vector <- list()
-
-for (alpha in vector_alphas){
-  for (lambda in vector_lambdas){
-    j=j+1
-    valorobjetivo_aux <- c()
-    betas_aux <-c()
-    status_vector_aux <- c()
-    vector_tauss <- c(50)
-    for (tau in vector_tauss){
-      
-      ## Funcion Objetivo
-      A_aux <- cbind(rep(0,ncol(X)-1), diag(ncol(X)-1)) #Tendra que cambiarse segun el tipo de problema
-      A <- as.matrix(cbind(A_aux, -diag(nrow(A_aux)), diag(nrow(A_aux))))
-      rhs        <- 0
-      sense      <- '='
-      objcon <- (1/nrow(X))*t(y)%*%y
-      matrizcompuesta <- (1/nrow(X))*as.matrix(rbind(cbind(t(X)%*%X+lambda*(1-alpha)*(t(A_aux)%*%A_aux),matrix(rep(0,ncol(X)*2*nrow(A)), ncol=2*nrow(A))),matrix(rep(0, 2*nrow(A)*(ncol(X)+2*nrow(A))),nrow=2*nrow(A))))
-      obj <- c(rep(0, ncol(X)), rep(alpha*lambda, 2*nrow(A))) - (2/nrow(X))*t(y)%*%cbind(X,matrix(rep(0, 2*nrow(A)*nrow(X)),ncol=2*nrow(A)))
-      Q <- matrizcompuesta
-      vtype <- 'C'
-      modelsense <- 'min'
-      modelname <- 'CLassoMatrizId'
-      lb <- c(rep(-Inf,ncol(X)), rep(0,2*nrow(A)))
-      quadcon <- list()
-      Cuadratica <- list()
-      for (i in 1:length(constraints_datasets)){
-        matrizcompuestarestriccion <- as.matrix(rbind(cbind(t(constraints_datasets[[i]][,-1])%*%constraints_datasets[[i]][,-1],matrix(rep(0,ncol(constraints_datasets[[i]][,-1])*2*nrow(A)), ncol=2*nrow(A))),matrix(rep(0, 2*nrow(A)*(ncol(constraints_datasets[[i]][,-1])+2*nrow(A))),nrow=2*nrow(A))))
-        Cuadratica$Qc[[i]]= (1/nrow(constraints_datasets[[i]][,-1]))*matrizcompuestarestriccion
-        Cuadratica$q[[i]] = -(2/nrow(constraints_datasets[[i]][,-1]))*t(constraints_datasets[[i]][,1])%*%cbind(constraints_datasets[[i]][,-1],matrix(rep(0, 2*nrow(A)*nrow(constraints_datasets[[i]][,-1])),ncol=2*nrow(A)))
-        Cuadratica$rhs[[i]] =  (1+tau)*ECM_star[i] - (1/nrow(constraints_datasets[[i]][,-1]))*t(constraints_datasets[[i]][,1])%*%constraints_datasets[[i]][,1]
-        Cuadratica$sense[[i]] <- '<'
-        
-        quadcon[[i]] <- list(Qc =  Cuadratica$Qc[[i]], q =  as.numeric(Cuadratica$q[[i]]), rhs= Cuadratica$rhs[[i]], sense = Cuadratica$sense[[i]])
-      }
-      
-      model <- list(A=A,rhs=rhs,sense=sense,obj=obj, Q=Q, vtype=vtype,modelsense=modelsense, lb=lb, objcon=objcon, quadcon=quadcon)
-      
-      result <- gurobi(model)
-      status_vector_aux <- c(status_vector_aux, result$status)
-      
-      
-      valorobjetivo_aux1 <- result$objval
-      betas_aux1 <- result$x[1:ncol(X)]
-      
-      valorobjetivo_aux <- c(valorobjetivo_aux, valorobjetivo_aux1)
-      betas_aux <- rbind(betas_aux, betas_aux1)
-    }
-    
     valorobjetivo[[j]] <- valorobjetivo_aux
-    #betas[[j]] <- rbind(matrix(logical(0), nrow=(length(vector_tauss)- length(tauss)), ncol=ncol(X)),betas_aux)
-    #betas[[j]] <- rbind(betas_aux, matrix(logical(0), nrow=(length(vector_tauss)- length(tauss)), ncol=ncol(X)))
-    betas[[j]] <- betas_aux
     status_vector[[j]] <- status_vector_aux
-  }}
+  }
+  
+  list(betas = betas, valorobjetivo = valorobjetivo, status = status_vector)
+}
 
+# Run the model for alpha = 0.25
+result_025 <- run_constrained_lasso(alpha = 0.25)
+
+# Process results
+lambda <- seq(0, 30, by = 0.1)
+beta_matrix_025 <- do.call(rbind, result_025$betas)
+beta_matrix_025 <- cbind(lambda, beta_matrix_025[, c(2, 3, 4)])
+colnames(beta_matrix_025) <- c("lambda", paste0("beta", 1:3))
+df_025 <- as.data.frame(beta_matrix_025)
+df_025$DifEN <- abs(df_025$beta1 - df_025$beta2)
+
+# Run for alpha = 0.5
+result_050 <- run_constrained_lasso(alpha = 0.5)
+beta_matrix_050 <- do.call(rbind, result_050$betas)
+beta_matrix_050 <- cbind(lambda, beta_matrix_050[, c(2, 3, 4)])
+colnames(beta_matrix_050) <- c("lambda", paste0("beta", 1:3))
+df_050 <- as.data.frame(beta_matrix_050)
+df_050$DifEN <- abs(df_050$beta1 - df_050$beta2)
+
+# Run for alpha = 0.75
+result_075 <- run_constrained_lasso(alpha = 0.75)
+beta_matrix_075 <- do.call(rbind, result_075$betas)
+beta_matrix_075 <- cbind(lambda, beta_matrix_075[, c(2, 3, 4)])
+colnames(beta_matrix_075) <- c("lambda", paste0("beta", 1:3))
+df_075 <- as.data.frame(beta_matrix_075)
+df_075$DifEN <- abs(df_075$beta1 - df_075$beta2)
+
+# Run for alpha = 0.75
+result_1 <- run_constrained_lasso(alpha = 1)
+beta_matrix_1 <- do.call(rbind, result_1$betas)
+beta_matrix_1 <- cbind(lambda, beta_matrix_1[, c(2, 3, 4)])
+colnames(beta_matrix_1) <- c("lambda", paste0("beta", 1:3))
+df_1 <- as.data.frame(beta_matrix_1)
+df_1$DifEN <- abs(df_1$beta1 - df_1$beta2)
 
 library(ggplot2)
-library(latex2exp)
-library(tidyr)
 library(dplyr)
-
-lambda <- seq(0,30,by=0.100)
-beta_matrix <- do.call(rbind, betas)
-beta_matrix <- cbind(lambda,beta_matrix[,c(2,3,4)])
-colnames(beta_matrix) <- c("lambda",paste0("beta", 1:3))
-df <- as.data.frame(beta_matrix)
-
-DifEN <- abs(df$beta1-df$beta2)
-
-##ALPHA=0.75
-options(digits = 11)
-library(gurobi)
-path_directory = "C:/Users/jtrec/OneDrive/Desktop/Codigo Jaime/"
-source(paste(path_directory, 'ECM_star_function.R', sep=""))
-source(paste(path_directory, 'tau_min_function_2.R', sep=""))
-source(paste(path_directory, 'tau_max_function.R', sep=""))
-source(paste(path_directory, 'CorrelationDataSet.R', sep=""))
-alpha<-0.75
-p<-.99
-vector_alphas <- c(alpha)
-ext_lambdas <- 30
-grosor_rejilla_lambdas <- 0.1
-vector_lambdas <- seq(0,ext_lambdas,by=grosor_rejilla_lambdas)
-grosor_rejilla_taus <-0.1
-df <- generate_dataset(p,100,80)
-df <- cbind(Intercept=1,df)
-X <- df[,-c(2,13)]
-X <- as.matrix(X)
-y <-  df[,2]
-X_2 <- as.matrix(df[which(df[,13]==2),-c(2,13)])
-y_2 <- df[which(df[,13]==2),2]
-##Computation of MSE*_l:
-constraints_datasets <- list(list())
-constraints_datasets[[1]] <- cbind(y_2,X_2)
-constraints_datasets[[1]] <- as.matrix(constraints_datasets[[1]])
-constraint_number <- length(constraints_datasets)
-Sol_OLS_constraints <- c()
-f0_aux <- ECM_star_function(as.matrix(constraints_datasets[[1]][,-1]), constraints_datasets[[1]][,1])
-ECM_star <- as.numeric(f0_aux[2])
-Sol_OLS_constraints <-as.numeric(f0_aux[3:(ncol(constraints_datasets[[1]][,-1])+2)])
-vector_tauss<-c(50)
-if (is.null(vector_tauss)) {
-  #Computation of tau_min (no dependence on hyperparameters)
-  tau_min <- tau_min_function_2(constraints_datasets, ECM_star) ##REVISAR
-  tau_max_lambda_vector <- tau_max(constraints_datasets,vector_lambdas,alpha)
-  vector_tauss <-  seq(tau_min, max(tau_max_lambda_vector)+2, by=grosor_rejilla_taus)}
-vector_tauss
-j=0
-valorobjetivo <- list()
-betas <- list()
-status_vector <- list()
-
-for (alpha in vector_alphas){
-  for (lambda in vector_lambdas){
-    j=j+1
-    valorobjetivo_aux <- c()
-    betas_aux <-c()
-    status_vector_aux <- c()
-    vector_tauss <- c(50)
-    for (tau in vector_tauss){
-      
-      ## Funcion Objetivo
-      A_aux <- cbind(rep(0,ncol(X)-1), diag(ncol(X)-1)) #Tendra que cambiarse segun el tipo de problema
-      A <- as.matrix(cbind(A_aux, -diag(nrow(A_aux)), diag(nrow(A_aux))))
-      rhs        <- 0
-      sense      <- '='
-      objcon <- (1/nrow(X))*t(y)%*%y
-      matrizcompuesta <- (1/nrow(X))*as.matrix(rbind(cbind(t(X)%*%X+lambda*(1-alpha)*(t(A_aux)%*%A_aux),matrix(rep(0,ncol(X)*2*nrow(A)), ncol=2*nrow(A))),matrix(rep(0, 2*nrow(A)*(ncol(X)+2*nrow(A))),nrow=2*nrow(A))))
-      obj <- c(rep(0, ncol(X)), rep(alpha*lambda, 2*nrow(A))) - (2/nrow(X))*t(y)%*%cbind(X,matrix(rep(0, 2*nrow(A)*nrow(X)),ncol=2*nrow(A)))
-      Q <- matrizcompuesta
-      vtype <- 'C'
-      modelsense <- 'min'
-      modelname <- 'CLassoMatrizId'
-      lb <- c(rep(-Inf,ncol(X)), rep(0,2*nrow(A)))
-      quadcon <- list()
-      Cuadratica <- list()
-      for (i in 1:length(constraints_datasets)){
-        matrizcompuestarestriccion <- as.matrix(rbind(cbind(t(constraints_datasets[[i]][,-1])%*%constraints_datasets[[i]][,-1],matrix(rep(0,ncol(constraints_datasets[[i]][,-1])*2*nrow(A)), ncol=2*nrow(A))),matrix(rep(0, 2*nrow(A)*(ncol(constraints_datasets[[i]][,-1])+2*nrow(A))),nrow=2*nrow(A))))
-        Cuadratica$Qc[[i]]= (1/nrow(constraints_datasets[[i]][,-1]))*matrizcompuestarestriccion
-        Cuadratica$q[[i]] = -(2/nrow(constraints_datasets[[i]][,-1]))*t(constraints_datasets[[i]][,1])%*%cbind(constraints_datasets[[i]][,-1],matrix(rep(0, 2*nrow(A)*nrow(constraints_datasets[[i]][,-1])),ncol=2*nrow(A)))
-        Cuadratica$rhs[[i]] =  (1+tau)*ECM_star[i] - (1/nrow(constraints_datasets[[i]][,-1]))*t(constraints_datasets[[i]][,1])%*%constraints_datasets[[i]][,1]
-        Cuadratica$sense[[i]] <- '<'
-        
-        quadcon[[i]] <- list(Qc =  Cuadratica$Qc[[i]], q =  as.numeric(Cuadratica$q[[i]]), rhs= Cuadratica$rhs[[i]], sense = Cuadratica$sense[[i]])
-      }
-      
-      model <- list(A=A,rhs=rhs,sense=sense,obj=obj, Q=Q, vtype=vtype,modelsense=modelsense, lb=lb, objcon=objcon, quadcon=quadcon)
-      
-      result <- gurobi(model)
-      status_vector_aux <- c(status_vector_aux, result$status)
-      
-      
-      valorobjetivo_aux1 <- result$objval
-      betas_aux1 <- result$x[1:ncol(X)]
-      
-      valorobjetivo_aux <- c(valorobjetivo_aux, valorobjetivo_aux1)
-      betas_aux <- rbind(betas_aux, betas_aux1)
-    }
-    
-    valorobjetivo[[j]] <- valorobjetivo_aux
-    #betas[[j]] <- rbind(matrix(logical(0), nrow=(length(vector_tauss)- length(tauss)), ncol=ncol(X)),betas_aux)
-    #betas[[j]] <- rbind(betas_aux, matrix(logical(0), nrow=(length(vector_tauss)- length(tauss)), ncol=ncol(X)))
-    betas[[j]] <- betas_aux
-    status_vector[[j]] <- status_vector_aux
-  }}
-lambda <- seq(0,30,by=0.100)
-beta_matrix <- do.call(rbind, betas)
-beta_matrix <- cbind(lambda,beta_matrix[,c(2,3,4)])
-colnames(beta_matrix) <- c("lambda",paste0("beta", 1:3))
-df <- as.data.frame(beta_matrix)
-
-DifEN2 <- abs(df$beta1-df$beta2)
-
-##ALPHA=1
-options(digits = 11)
-library(gurobi)
-path_directory = "C:/Users/jtrec/OneDrive/Desktop/Codigo Jaime/"
-source(paste(path_directory, 'ECM_star_function.R', sep=""))
-source(paste(path_directory, 'tau_min_function_2.R', sep=""))
-source(paste(path_directory, 'tau_max_function.R', sep=""))
-source(paste(path_directory, 'CorrelationDataSet.R', sep=""))
-alpha<-1
-p<-.99
-vector_alphas <- c(alpha)
-ext_lambdas <- 30
-grosor_rejilla_lambdas <- 0.1
-vector_lambdas <- seq(0,ext_lambdas,by=grosor_rejilla_lambdas)
-grosor_rejilla_taus <-0.1
-df <- generate_dataset(p,100,80)
-df <- cbind(Intercept=1,df)
-X <- df[,-c(2,13)]
-X <- as.matrix(X)
-y <-  df[,2]
-X_2 <- as.matrix(df[which(df[,13]==2),-c(2,13)])
-y_2 <- df[which(df[,13]==2),2]
-##Computation of MSE*_l:
-constraints_datasets <- list(list())
-constraints_datasets[[1]] <- cbind(y_2,X_2)
-constraints_datasets[[1]] <- as.matrix(constraints_datasets[[1]])
-constraint_number <- length(constraints_datasets)
-Sol_OLS_constraints <- c()
-f0_aux <- ECM_star_function(as.matrix(constraints_datasets[[1]][,-1]), constraints_datasets[[1]][,1])
-ECM_star <- as.numeric(f0_aux[2])
-Sol_OLS_constraints <-as.numeric(f0_aux[3:(ncol(constraints_datasets[[1]][,-1])+2)])
-vector_tauss<-c(50)
-if (is.null(vector_tauss)) {
-  #Computation of tau_min (no dependence on hyperparameters)
-  tau_min <- tau_min_function_2(constraints_datasets, ECM_star) ##REVISAR
-  tau_max_lambda_vector <- tau_max(constraints_datasets,vector_lambdas,alpha)
-  vector_tauss <-  seq(tau_min, max(tau_max_lambda_vector)+2, by=grosor_rejilla_taus)}
-vector_tauss
-j=0
-valorobjetivo <- list()
-betas <- list()
-status_vector <- list()
-
-for (alpha in vector_alphas){
-  for (lambda in vector_lambdas){
-    j=j+1
-    valorobjetivo_aux <- c()
-    betas_aux <-c()
-    status_vector_aux <- c()
-    vector_tauss <- c(50)
-    for (tau in vector_tauss){
-      
-      ## Funcion Objetivo
-      A_aux <- cbind(rep(0,ncol(X)-1), diag(ncol(X)-1)) #Tendra que cambiarse segun el tipo de problema
-      A <- as.matrix(cbind(A_aux, -diag(nrow(A_aux)), diag(nrow(A_aux))))
-      rhs        <- 0
-      sense      <- '='
-      objcon <- (1/nrow(X))*t(y)%*%y
-      matrizcompuesta <- (1/nrow(X))*as.matrix(rbind(cbind(t(X)%*%X+lambda*(1-alpha)*(t(A_aux)%*%A_aux),matrix(rep(0,ncol(X)*2*nrow(A)), ncol=2*nrow(A))),matrix(rep(0, 2*nrow(A)*(ncol(X)+2*nrow(A))),nrow=2*nrow(A))))
-      obj <- c(rep(0, ncol(X)), rep(alpha*lambda, 2*nrow(A))) - (2/nrow(X))*t(y)%*%cbind(X,matrix(rep(0, 2*nrow(A)*nrow(X)),ncol=2*nrow(A)))
-      Q <- matrizcompuesta
-      vtype <- 'C'
-      modelsense <- 'min'
-      modelname <- 'CLassoMatrizId'
-      lb <- c(rep(-Inf,ncol(X)), rep(0,2*nrow(A)))
-      quadcon <- list()
-      Cuadratica <- list()
-      for (i in 1:length(constraints_datasets)){
-        matrizcompuestarestriccion <- as.matrix(rbind(cbind(t(constraints_datasets[[i]][,-1])%*%constraints_datasets[[i]][,-1],matrix(rep(0,ncol(constraints_datasets[[i]][,-1])*2*nrow(A)), ncol=2*nrow(A))),matrix(rep(0, 2*nrow(A)*(ncol(constraints_datasets[[i]][,-1])+2*nrow(A))),nrow=2*nrow(A))))
-        Cuadratica$Qc[[i]]= (1/nrow(constraints_datasets[[i]][,-1]))*matrizcompuestarestriccion
-        Cuadratica$q[[i]] = -(2/nrow(constraints_datasets[[i]][,-1]))*t(constraints_datasets[[i]][,1])%*%cbind(constraints_datasets[[i]][,-1],matrix(rep(0, 2*nrow(A)*nrow(constraints_datasets[[i]][,-1])),ncol=2*nrow(A)))
-        Cuadratica$rhs[[i]] =  (1+tau)*ECM_star[i] - (1/nrow(constraints_datasets[[i]][,-1]))*t(constraints_datasets[[i]][,1])%*%constraints_datasets[[i]][,1]
-        Cuadratica$sense[[i]] <- '<'
-        
-        quadcon[[i]] <- list(Qc =  Cuadratica$Qc[[i]], q =  as.numeric(Cuadratica$q[[i]]), rhs= Cuadratica$rhs[[i]], sense = Cuadratica$sense[[i]])
-      }
-      
-      model <- list(A=A,rhs=rhs,sense=sense,obj=obj, Q=Q, vtype=vtype,modelsense=modelsense, lb=lb, objcon=objcon, quadcon=quadcon)
-      
-      result <- gurobi(model)
-      status_vector_aux <- c(status_vector_aux, result$status)
-      
-      
-      valorobjetivo_aux1 <- result$objval
-      betas_aux1 <- result$x[1:ncol(X)]
-      
-      valorobjetivo_aux <- c(valorobjetivo_aux, valorobjetivo_aux1)
-      betas_aux <- rbind(betas_aux, betas_aux1)
-    }
-    
-    valorobjetivo[[j]] <- valorobjetivo_aux
-    #betas[[j]] <- rbind(matrix(logical(0), nrow=(length(vector_tauss)- length(tauss)), ncol=ncol(X)),betas_aux)
-    #betas[[j]] <- rbind(betas_aux, matrix(logical(0), nrow=(length(vector_tauss)- length(tauss)), ncol=ncol(X)))
-    betas[[j]] <- betas_aux
-    status_vector[[j]] <- status_vector_aux
-  }}
-
-
-library(ggplot2)
-library(latex2exp)
 library(tidyr)
-library(dplyr)
-
-lambda <- seq(0,30,by=0.100)
-beta_matrix <- do.call(rbind, betas)
-beta_matrix <- cbind(lambda,beta_matrix[,c(2,3,4)])
-colnames(beta_matrix) <- c("lambda",paste0("beta", 1:3))
-df <- as.data.frame(beta_matrix)
-
-DifLasso <- abs(df$beta1-df$beta2)
-
-library(ggplot2)
 library(latex2exp)
-library(tidyr)
-library(dplyr)
 
-lambda <- seq(0,30,by=0.100)
-beta_matrix <- do.call(rbind, betas)
-beta_matrix <- cbind(lambda,beta_matrix[,c(2,3,4)])
-colnames(beta_matrix) <- c("lambda",paste0("beta", 1:3))
-df <- as.data.frame(beta_matrix)
+# Combine all data frames with an alpha identifier
+df_025$alpha <- 0.25
+df_050$alpha <- 0.5
+df_075$alpha <- 0.75
+df_1$alpha <- 1
 
+# Combine into one data frame
+df_all <- bind_rows(df_025, df_050, df_075,df_1)
 
-library(ggplot2)
-library(latex2exp)
-library(tidyr)
-library(dplyr)
-
-lambda <- seq(0,30,by=0.100)
-beta_matrix <- do.call(rbind, betas)
-beta_matrix <- cbind(lambda,beta_matrix[,c(2,3,4)])
-colnames(beta_matrix) <- c("lambda",paste0("beta", 1:3))
-df <- as.data.frame(beta_matrix)
-
-
-
-diferencias <- data.frame(lambda=lambda, Lasso = DifLasso, EN05 = DifEN, EN075 = DifEN2, EN025 = DifEN3)
-
-diferencias_long <- pivot_longer(diferencias, cols = c("Lasso", "EN025","EN05", "EN075"),
-                                 names_to = "Method", values_to = "Difference")
-
-# Plot
-ggplot(diferencias_long, aes(x = lambda, y = Difference, color = Method)) +
+# Plot |β1 - β2| over lambda for all alpha values
+ggplot(df_all, aes(x = lambda, y = DifEN, color = factor(alpha))) +
   geom_line(size = 1) +
-  labs(title = "Comparison of CSCLasso and CSCEN",
-       x = expression(lambda),
-       y = TeX("$|\\beta_1-\\beta_2|$"),
-       color = "Method") +
-  scale_color_manual(values = c("Lasso" = "blue", "EN025" = "red", "EN05" = "orange", "EN075"="purple"),
-                     labels = c("Lasso" = TeX("CSCLasso ($\\alpha=1$)"), "EN025" = TeX("CSCEN ($\\alpha=0.25$)"), "EN05" = TeX("CSCEN ($\\alpha=0.5$)"), "EN075" = TeX("CSCEN ($\\alpha=0.75$)")))+
-  theme_minimal()
-
+  labs(
+    title = TeX("Difference $|\\beta_1 - \\beta_2|$ vs. $\\lambda$ for different $\\alpha$"),
+    x = TeX("$\\lambda$"),
+    y = TeX("$|\\beta_1 - \\beta_2|$"),
+    color = TeX("$\\alpha$")
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(hjust = 0.5)
+  )
 
 
 
