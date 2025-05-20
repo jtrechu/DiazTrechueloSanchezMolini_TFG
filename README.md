@@ -1,6 +1,6 @@
 # CSCEN Experiments Repository
 
-This repository contains the implementation code for the experiments in my thesis on Constrained Sensitive Collaborative Elastic Net (CSCEN). The code is organized by experiment with supporting utility files.
+This repository contains the implementation code for the experiments in my thesis on th Cost Sensitive Constrained Elastic Net (CSCEN). The code is organized by experiments with supporting utility files.
 
 ## Experiment 1: Prostate Cancer Data Analysis
 
