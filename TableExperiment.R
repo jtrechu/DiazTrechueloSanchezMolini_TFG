@@ -1,251 +1,136 @@
-# Load the data used for modeling from an external R script
-source("TableData.R") # Generate the dataset
+# Load dataset-generating script
+source("TableData.R")
 resultados_totales <- data.frame()
-# Set Elastic Net mixing parameter
-for (alpha in c(1,0.75,0.5,0.25)){
 
-# Configure number display options
-options(digits = 11)
-
-# Load required libraries
+# Libraries
 library(gurobi)
-path_directory = "C:/Users/jtrec/OneDrive/Desktop/Codigo Jaime/"
-
-# Define the alpha value(s) for EN
-vector_alphas <- c(alpha)
-
-# Maximum lambda value for EN regularization
-ext_lambdas <- 12
-
-# Initialize list to store coefficients from each fold
-betas_fold <- list()
-
-# Create a sequence of lambda values for testing, dropping the first one (zero)
-vector_lambdas <- seq(0, ext_lambdas, length.out = 6)[-1]
-
-# Load additional libraries for modeling and cross-validation
 library(genridge)
 library(glmnet)
 library(caret)
 
-# Set random seed for reproducibility
-set.seed(2025)
-samples <- tableData() 
-# Prepare feature matrix and response variable
-X <- samples[,-c(22,23)]  # Drop response and group columns
-X <- as.matrix(X)
-y <- samples[,22]         # Response variable
-
-# Split data into subgroups (1 to 8) based on the 'Group' variable
-X_1 <- samples[which(samples[,"Group"]==1),-c(22,23)]
-y_1 <- samples[which(samples[,"Group"]==1),22]
-X_2 <- samples[which(samples[,"Group"]==2),-c(22,23)]
-y_2 <- samples[which(samples[,"Group"]==2),22]
-X_3 <- samples[which(samples[,"Group"]==3),-c(22,23)]
-y_3 <- samples[which(samples[,"Group"]==3),22]
-X_4 <- samples[which(samples[,"Group"]==4),-c(22,23)]
-y_4 <- samples[which(samples[,"Group"]==4),22]
-X_5 <- samples[which(samples[,"Group"]==5),-c(22,23)]
-y_5 <- samples[which(samples[,"Group"]==5),22]
-X_6 <- samples[which(samples[,"Group"]==6),-c(22,23)]
-y_6 <- samples[which(samples[,"Group"]==6),22]
-X_7 <- samples[which(samples[,"Group"]==7),-c(22,23)]
-y_7 <- samples[which(samples[,"Group"]==7),22]
-X_8 <- samples[which(samples[,"Group"]==8),-c(22,23)]
-y_8 <- samples[which(samples[,"Group"]==8),22]
-
-# Create 2-folds train and test
-library(caret)
-train_indices <- createDataPartition(samples$Group, p = 0.75, list = FALSE)
-
-# Initialize matrix to store MSEs for different gamma values and folds
-MSE.df <- matrix(numeric(0), nrow = 4 , ncol = 5)
-betas_fold <- list()
-
-# Cross-validation loop over 5 folds
-
-  betas <- matrix(numeric(0), nrow = 21, ncol = 5)  # Store betas per gamma
-  Xtrain <- samples[train_indices,-c(22,23)]
-  Xtrain <- as.matrix(Xtrain)
-  ytrain <- samples[train_indices,22]
+# Elastic Net mixing parameters
+for (alpha in c(1, 0.75, 0.5, 0.25)) {
+  set.seed(2025)
+  options(digits = 11)
   
-  # Prepare group-specific data from the training set
-  X_1train <- samples[which(samples[train_indices,"Group"]==1),-c(22,23)]
-  y_1train <- samples[which(samples[train_indices,"Group"]==1),22]
-  X_2train <- samples[which(samples[train_indices,"Group"]==2),-c(22,23)]
-  y_2train <- samples[which(samples[train_indices,"Group"]==2),22]
-  X_3train <- samples[which(samples[train_indices,"Group"]==3),-c(22,23)]
-  y_3train <- samples[which(samples[train_indices,"Group"]==3),22]
+  samples <- tableData()
   
-  # Select the lambda for this fold
+  # Define feature matrix X and response y
+  X <- as.matrix(samples[,-c(22,23)])
+  y <- samples[,22]
+  
+  # Training indices (75%)
+  train_indices <- createDataPartition(samples$Group, p = 0.75, list = FALSE)
+  
+  Xtrain <- as.matrix(samples[train_indices, -c(22,23)])
+  ytrain <- samples[train_indices, 22]
   lambda <- 2.4
   
-  # Fit an Elastic Net model with alpha and lambda
-  en <- glmnet(Xtrain[,-1], ytrain, alpha = alpha, lambda = lambda / 2, standardize = FALSE)
-  en <- c(en$a0, as.matrix(en$beta))  # Combine intercept and coefficients
+  # Fit unconstrained Elastic Net
+  en_model <- glmnet(Xtrain[,-1], ytrain, alpha = alpha, lambda = lambda / 2, standardize = FALSE)
+  en_coef <- c(en_model$a0, as.matrix(en_model$beta))
   
-  # Define gamma values for cost-sensitive constraint
-  gammas <- c(0.03, 0.05, 0.1, 0.15)
-  MSE <- c()
+  # Gamma values for fairness constraints
+  gammas <- c(0, 0.03, 0.05, 0.1, 0.15)
+  betas <- matrix(0, nrow = 21, ncol = length(gammas))
+  betas[,1] <- as.numeric(en_coef)  # First column is baseline EN
   
-  for (k in (1:length(gammas))){
-    gamma = gammas[k]
-    # Compute adjusted MSE terms for group 1 to 3
-    f1 <- (1-gamma)*mean((y_1train - as.matrix(X_1train)%*%en)^2)
-    f2 <- (1-gamma)*mean((y_2train - as.matrix(X_2train)%*%en)^2)
-    f3 <- (1-gamma)*mean((y_3train - as.matrix(X_3train)%*%en)^2)
-    f <- c(f1,f2,f3)
+  # Prepare group-specific training data
+  for (k in 2:length(gammas)) {
+    gamma <- gammas[k]
     
-    # Optimization setup
-    j = 0
-    valorobjetivo <- list()
-    status_vector <- list()
-    j = j + 1
-    valorobjetivo_aux <- c()
-    betas_aux <- c()
-    status_vector_aux <- c()
+    group_datasets <- lapply(1:3, function(g) {
+      idx <- which(samples$Group[train_indices] == g)
+      cbind(samples[train_indices[idx], 22], as.matrix(samples[train_indices[idx], -c(22,23)]))
+    })
     
-    # Identity structure for EN penalty
-    A_aux <- cbind(rep(0,ncol(Xtrain)-1), diag(ncol(Xtrain)-1))
-    A <- as.matrix(cbind(A_aux, -diag(nrow(A_aux)), diag(nrow(A_aux))))
+    # Compute unconstrained group losses
+    f <- sapply(group_datasets, function(d) {
+      (1 - gamma) * mean((d[,1] - as.matrix(d[,-1]) %*% en_coef)^2)
+    })
     
-    # Define constraint direction, objective, and quadratic penalty
+    # Build EN penalty structure
+    A_aux <- cbind(rep(0, ncol(Xtrain)-1), diag(ncol(Xtrain)-1))
+    A <- cbind(A_aux, -diag(nrow(A_aux)), diag(nrow(A_aux)))
     rhs <- 0
     sense <- '='
-    objcon <- (1/nrow(Xtrain)) * t(ytrain) %*% ytrain
+    objcon <- (1/nrow(Xtrain)) * sum(ytrain^2)
     
-    # Construct the full quadratic matrix for optimization
-    matrizcompuesta <- (1/nrow(Xtrain)) * as.matrix(rbind(
-      cbind(t(Xtrain)%*%Xtrain + lambda*(1-alpha)*(t(A_aux)%*%A_aux), matrix(rep(0,ncol(Xtrain)*2*nrow(A)), ncol=2*nrow(A))),
-      matrix(rep(0, 2*nrow(A)*(ncol(Xtrain)+2*nrow(A))), nrow=2*nrow(A))
-    ))
+    Q <- (1/nrow(Xtrain)) * rbind(
+      cbind(t(Xtrain) %*% Xtrain + lambda * (1 - alpha) * t(A_aux) %*% A_aux,
+            matrix(0, ncol = 2 * nrow(A), nrow = ncol(Xtrain))),
+      matrix(0, ncol = ncol(Xtrain) + 2 * nrow(A), nrow = 2 * nrow(A))
+    )
     
-    # Linear part of the objective function
-    obj <- c(rep(0, ncol(Xtrain)), rep(alpha*lambda, 2*nrow(A))) - (2/nrow(Xtrain)) * t(ytrain) %*% cbind(Xtrain, matrix(rep(0, 2*nrow(A)*nrow(Xtrain)), ncol=2*nrow(A)))
+    obj <- c(rep(0, ncol(Xtrain)), rep(alpha * lambda, 2 * nrow(A))) -
+      (2 / nrow(Xtrain)) * t(ytrain) %*% cbind(Xtrain, matrix(0, nrow(Xtrain), 2 * nrow(A)))
     
-    Q <- matrizcompuesta
-    vtype <- 'C'
-    modelsense <- 'min'
-    modelname <- 'CLassoMatrizId'
-    lb <- c(rep(-Inf,ncol(Xtrain)), rep(0,2*nrow(A)))
+    lb <- c(rep(-Inf, ncol(Xtrain)), rep(0, 2 * nrow(A)))
     
-    # Define empty list to store quadratic constraints
-    quadcon <- list()
-    Cuadratica <- list()
+    # Quadratic constraints per group
+    quadcon <- lapply(1:3, function(i) {
+      d <- group_datasets[[i]][,-1]
+      n <- nrow(d)
+      Qc <- (1/n) * rbind(
+        cbind(t(d) %*% d, matrix(0, ncol = 2 * nrow(A), nrow = ncol(d))),
+        matrix(0, nrow = 2 * nrow(A), ncol = ncol(d) + 2 * nrow(A))
+      )
+      q <- -(2/n) * t(group_datasets[[i]][,1]) %*% cbind(d, matrix(0, nrow(d), 2 * nrow(A)))
+      rhs <- f[i] - (1/n) * sum(group_datasets[[i]][,1]^2)
+      list(Qc = Qc, q = as.numeric(q), rhs = rhs, sense = '<')
+    })
     
-    # Build constraint datasets for groups 1, 2, and 3
-    constraints_datasets <- list(list())
-    constraints_datasets[[1]] <- as.matrix(cbind(y_1train,X_1train))
-    constraints_datasets[[2]] <- as.matrix(cbind(y_2train,X_2train))
-    constraints_datasets[[3]] <- as.matrix(cbind(y_3train,X_3train))
-    constraint_number <- length(constraints_datasets)
+    model <- list(
+      A = A, rhs = rhs, sense = sense,
+      obj = obj, Q = Q, vtype = 'C', modelsense = 'min', lb = lb,
+      objcon = objcon, quadcon = quadcon
+    )
     
-    # Define the quadratic constraints (cost-sensitive constraints)
-    for (i in 1:constraint_number){
-      matrizcompuestarestriccion <- as.matrix(rbind(
-        cbind(t(constraints_datasets[[i]][,-1])%*%constraints_datasets[[i]][,-1], matrix(rep(0, ncol(constraints_datasets[[i]][,-1])*2*nrow(A)), ncol=2*nrow(A))),
-        matrix(rep(0, 2*nrow(A)*(ncol(constraints_datasets[[i]][,-1])+2*nrow(A))), nrow=2*nrow(A))
-      ))
-      Cuadratica$Qc[[i]] = (1/nrow(constraints_datasets[[i]][,-1])) * matrizcompuestarestriccion
-      Cuadratica$q[[i]] = -(2/nrow(constraints_datasets[[i]][,-1])) * t(constraints_datasets[[i]][,1]) %*% cbind(constraints_datasets[[i]][,-1], matrix(rep(0, 2*nrow(A)*nrow(constraints_datasets[[i]][,-1])), ncol=2*nrow(A)))
-      Cuadratica$rhs[[i]] = f[i] - (1/nrow(constraints_datasets[[i]][,-1])) * t(constraints_datasets[[i]][,1]) %*% constraints_datasets[[i]][,1]
-      Cuadratica$sense[[i]] <- '<'
-      
-      quadcon[[i]] <- list(Qc = Cuadratica$Qc[[i]], q = as.numeric(Cuadratica$q[[i]]), rhs = Cuadratica$rhs[[i]], sense = Cuadratica$sense[[i]])
-    }
-    
-    # Build Gurobi model
-    model <- list(A=A, rhs=rhs, sense=sense, obj=obj, Q=Q, vtype=vtype, modelsense=modelsense, lb=lb, objcon=objcon, quadcon=quadcon)
-    
-    # Solve the constrained optimization
     result <- gurobi(model)
-    
-    # Store solution status and objective value
-    status_vector_aux <- c(status_vector_aux, result$status)
-    valorobjetivo_aux1 <- result$objval
-    
-    # Extract beta coefficients from solution
-    betas_aux <- result$x[1:ncol(Xtrain)]
-    # Store coefficients for this gamma value
-    betas[,k+1] <- betas_aux
+    betas[,k] <- result$x[1:ncol(Xtrain)]
   }
-  betas[,1] <- as.numeric(en)
-
-# ----- Re-Run previous code for Final model fitting 
-# ----- to obtain MSE for different groups and parameters
-
-Xtest <- X[-train_indices,]
-ytest <- y[-train_indices]
-
-Xtest_1 <- X_1[-train_indices,]
-ytest_1 <- y_1[-train_indices]
-
-Xtest_2 <- X_2[-train_indices, ]
-ytest_2 <- y_2[-train_indices]
-
-Xtest_3 <- X_3[-train_indices, ]
-ytest_3 <- y_3[-train_indices]
-
-Xtest_4 <- X_4[-train_indices, ]
-ytest_4 <- y_4[-train_indices]
-
-Xtest_5 <- X_5[-train_indices, ]
-ytest_5 <- y_5[-train_indices]
-
-Xtest_6 <- X_6[-train_indices, ]
-ytest_6 <- y_6[-train_indices]
-
-Xtest_7 <- X_7[-train_indices, ]
-ytest_7 <- y_7[-train_indices]
-
-Xtest_8 <- X_8[-train_indices, ]
-ytest_8 <- y_8[-train_indices]
-
-# Vector de valores de gamma
-gammas <- c(0, 0.03, 0.05, 0.1, 0.15)
-
-# Inicializar listas para almacenar resultados
-mse_matrix <- matrix(NA, nrow = length(gammas), ncol = 8)
-mse_global <- numeric(length(gammas))  # <- NUEVO
-num_coef_vec <- numeric(length(gammas))
-
-# Rellenar matrices y vectores
-for (i in 1:length(gammas)) {
-  beta <- betas[, i]
-  num_coef <- length(which(beta > 1e-6))
-  num_coef_vec[i] <- num_coef
   
-  # Calcular MSE global
-  residuos_global <- as.matrix(Xtest) %*% beta - ytest
-  mse_global[i] <- sum(residuos_global^2) / length(residuos_global)
+  # Prepare test sets
+  Xtest <- X[-train_indices,]
+  ytest <- y[-train_indices]
+  mse_matrix <- matrix(NA, nrow = length(gammas), ncol = 8)
+  mse_global <- numeric(length(gammas))
+  num_coef_vec <- numeric(length(gammas))
   
-  for (j in 1:8) {
-    Xtest_j <- get(paste0("Xtest_", j))
-    ytest_j <- get(paste0("ytest_", j))
-    residuos <- as.matrix(Xtest_j) %*% beta - ytest_j
-    mse_matrix[i, j] <- sum(residuos^2) / length(residuos)
+  for (i in seq_along(gammas)) {
+    beta <- betas[,i]
+    preds <- Xtest %*% beta
+    mse_global[i] <- mean((ytest - preds)^2)
+    num_coef_vec[i] <- sum(abs(beta) > 1e-6)
+    
+    for (j in 1:8) {
+      group_idx <- which(samples$Group[-train_indices] == j)
+      X_j <- Xtest[group_idx, ]
+      y_j <- ytest[group_idx]
+      mse_matrix[i,j] <- mean((X_j %*% beta - y_j)^2)
+    }
   }
+  
+  resultados <- data.frame(
+    alpha = alpha,
+    Gamma = gammas,
+    Num_Coefficients = num_coef_vec,
+    Global_MSE = mse_global,
+    mse_matrix
+  )
+  
+  resultados_totales <- rbind(resultados_totales, resultados)
 }
 
-# Crear el data.frame final con MSE global al principio
-colnames(mse_matrix) <- paste0("MSE_test_", 1:8)
-resultados <- data.frame(
-  alpha = alpha,
-  Gamma = gammas,
-  NumCoeficientes = num_coef_vec,
-  `MSE global` = mse_global,   # <- Aquí se añade
-  mse_matrix
-)
-
-# Acumular resultados por alpha
-resultados_totales <- rbind(resultados_totales, resultados)}
-# Renombrar columnas para presentación LaTeX si se desea
 colnames(resultados_totales) <- c(
-  "$\\alpha$", "$\\gamma$","Vars","MSE",
+  "$\\alpha$", "$\\gamma$", "Vars", "MSE",
   paste0("MSE ", 1:8)
 )
-# Crear tabla LaTeX
+
+# LaTeX table generation
+library(knitr)
+library(kableExtra)
 kable(resultados_totales, format = "latex", booktabs = TRUE, digits = 5,
-      caption = "MSE por grupo para distintos valores de $\\alpha$ y $\\gamma$") %>%
+      caption = "MSE by group for different values of $\\alpha$ and $\\gamma$") %>%
   kable_styling(latex_options = c()) %>%
-  collapse_rows(columns = 1, valign = "middle")  # <- aquí agrupamos alpha cada 4 filas
+  collapse_rows(columns = 1, valign = "middle")
