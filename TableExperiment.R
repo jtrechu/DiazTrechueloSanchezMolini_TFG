@@ -1,9 +1,8 @@
 # Load the data used for modeling from an external R script
-source("TableData.R")
-samples <- tableData()  # Generate the dataset
-
+source("TableData.R") # Generate the dataset
+resultados_totales <- data.frame()
 # Set Elastic Net mixing parameter
-alpha = 0.5
+for (alpha in c(1,0.75,0.5,0.25)){
 
 # Configure number display options
 options(digits = 11)
@@ -30,8 +29,8 @@ library(glmnet)
 library(caret)
 
 # Set random seed for reproducibility
-set.seed(123)
-
+set.seed(2025)
+samples <- tableData() 
 # Prepare feature matrix and response variable
 X <- samples[,-c(22,23)]  # Drop response and group columns
 X <- as.matrix(X)
@@ -55,19 +54,17 @@ y_7 <- samples[which(samples[,"Group"]==7),22]
 X_8 <- samples[which(samples[,"Group"]==8),-c(22,23)]
 y_8 <- samples[which(samples[,"Group"]==8),22]
 
-# Create 5-fold cross-validation groups based on the 'Group' variable
-folds <- createFolds(samples$Group, k = 5, list = TRUE, returnTrain = FALSE)
-
-# Define training set for fold g
-train_indices <- setdiff(1:nrow(samples), folds[[g]])
+# Create 2-folds train and test
+library(caret)
+train_indices <- createDataPartition(samples$Group, p = 0.75, list = FALSE)
 
 # Initialize matrix to store MSEs for different gamma values and folds
 MSE.df <- matrix(numeric(0), nrow = 4 , ncol = 5)
 betas_fold <- list()
 
 # Cross-validation loop over 5 folds
-for (g in 1:5){
-  betas <- matrix(numeric(0), nrow = 21, ncol = 4)  # Store betas per gamma
+
+  betas <- matrix(numeric(0), nrow = 21, ncol = 5)  # Store betas per gamma
   Xtrain <- samples[train_indices,-c(22,23)]
   Xtrain <- as.matrix(Xtrain)
   ytrain <- samples[train_indices,22]
@@ -81,7 +78,7 @@ for (g in 1:5){
   y_3train <- samples[which(samples[train_indices,"Group"]==3),22]
   
   # Select the lambda for this fold
-  lambda <- vector_lambdas[g]
+  lambda <- 2.4
   
   # Fit an Elastic Net model with alpha and lambda
   en <- glmnet(Xtrain[,-1], ytrain, alpha = alpha, lambda = lambda / 2, standardize = FALSE)
@@ -91,7 +88,8 @@ for (g in 1:5){
   gammas <- c(0.03, 0.05, 0.1, 0.15)
   MSE <- c()
   
-  for (gamma in gammas){
+  for (k in (1:length(gammas))){
+    gamma = gammas[k]
     # Compute adjusted MSE terms for group 1 to 3
     f1 <- (1-gamma)*mean((y_1train - as.matrix(X_1train)%*%en)^2)
     f2 <- (1-gamma)*mean((y_2train - as.matrix(X_2train)%*%en)^2)
@@ -168,54 +166,86 @@ for (g in 1:5){
     
     # Extract beta coefficients from solution
     betas_aux <- result$x[1:ncol(Xtrain)]
-    
-    # Evaluate test error (MSE) for this model
-    Xtest <- samples[folds[[g]],-c(22,23)]
-    ytest <- samples[folds[[g]],22]
-    residuos <- as.matrix(Xtest) %*% betas_aux - ytest
-    MSE_aux <- sum(residuos^2) / length(residuos)
-    MSE <- c(MSE, MSE_aux)
-    
     # Store coefficients for this gamma value
-    betas[,which(gammas == gamma)] <- betas_aux
+    betas[,k+1] <- betas_aux
   }
-  
-  # Store MSE values and coefficients for this fold
-  MSE.df[,g] <- MSE
-  betas_fold[[g]] <- betas
-}
-
-# Identify best performing gamma (one with minimum MSE) for each gamma index
-cvIndices <- apply(MSE.df, 1, which.min)
-cvIndices
+  betas[,1] <- as.numeric(en)
 
 # ----- Re-Run previous code for Final model fitting 
 # ----- to obtain MSE for different groups and parameters
-length(which(beta>1e-7))
-residuos <- as.matrix(Xtrain)%*%beta - ytrain
-MSE_aux <- sum(residuos^2)/length(residuos)
-MSE_aux
-residuos <- as.matrix(X_1)%*%beta - y_1
-MSE_aux <- sum(residuos^2)/length(residuos)
-MSE_aux
-residuos <- as.matrix(X_2)%*%beta - y_2
-MSE_aux <- sum(residuos^2)/length(residuos)
-MSE_aux
-residuos <- as.matrix(X_3)%*%beta - y_3
-MSE_aux <- sum(residuos^2)/length(residuos)
-MSE_aux
-residuos <- as.matrix(X_4)%*%beta - y_4
-MSE_aux <- sum(residuos^2)/length(residuos)
-MSE_aux
-residuos <- as.matrix(X_5)%*%beta - y_5
-MSE_aux <- sum(residuos^2)/length(residuos)
-MSE_aux
-residuos <- as.matrix(X_6)%*%beta - y_6
-MSE_aux <- sum(residuos^2)/length(residuos)
-MSE_aux
-residuos <- as.matrix(X_7)%*%beta - y_7
-MSE_aux <- sum(residuos^2)/length(residuos)
-MSE_aux
-residuos <- as.matrix(X_8)%*%beta - y_8
-MSE_aux <- sum(residuos^2)/length(residuos)
-MSE_aux
+
+Xtest <- X[-train_indices,]
+ytest <- y[-train_indices]
+
+Xtest_1 <- X_1[-train_indices,]
+ytest_1 <- y_1[-train_indices]
+
+Xtest_2 <- X_2[-train_indices, ]
+ytest_2 <- y_2[-train_indices]
+
+Xtest_3 <- X_3[-train_indices, ]
+ytest_3 <- y_3[-train_indices]
+
+Xtest_4 <- X_4[-train_indices, ]
+ytest_4 <- y_4[-train_indices]
+
+Xtest_5 <- X_5[-train_indices, ]
+ytest_5 <- y_5[-train_indices]
+
+Xtest_6 <- X_6[-train_indices, ]
+ytest_6 <- y_6[-train_indices]
+
+Xtest_7 <- X_7[-train_indices, ]
+ytest_7 <- y_7[-train_indices]
+
+Xtest_8 <- X_8[-train_indices, ]
+ytest_8 <- y_8[-train_indices]
+
+# Vector de valores de gamma
+gammas <- c(0, 0.03, 0.05, 0.1, 0.15)
+
+# Inicializar listas para almacenar resultados
+mse_matrix <- matrix(NA, nrow = length(gammas), ncol = 8)
+mse_global <- numeric(length(gammas))  # <- NUEVO
+num_coef_vec <- numeric(length(gammas))
+
+# Rellenar matrices y vectores
+for (i in 1:length(gammas)) {
+  beta <- betas[, i]
+  num_coef <- length(which(beta > 1e-6))
+  num_coef_vec[i] <- num_coef
+  
+  # Calcular MSE global
+  residuos_global <- as.matrix(Xtest) %*% beta - ytest
+  mse_global[i] <- sum(residuos_global^2) / length(residuos_global)
+  
+  for (j in 1:8) {
+    Xtest_j <- get(paste0("Xtest_", j))
+    ytest_j <- get(paste0("ytest_", j))
+    residuos <- as.matrix(Xtest_j) %*% beta - ytest_j
+    mse_matrix[i, j] <- sum(residuos^2) / length(residuos)
+  }
+}
+
+# Crear el data.frame final con MSE global al principio
+colnames(mse_matrix) <- paste0("MSE_test_", 1:8)
+resultados <- data.frame(
+  alpha = alpha,
+  Gamma = gammas,
+  NumCoeficientes = num_coef_vec,
+  `MSE global` = mse_global,   # <- Aquí se añade
+  mse_matrix
+)
+
+# Acumular resultados por alpha
+resultados_totales <- rbind(resultados_totales, resultados)}
+# Renombrar columnas para presentación LaTeX si se desea
+colnames(resultados_totales) <- c(
+  "$\\alpha$", "$\\gamma$","Vars","MSE",
+  paste0("MSE ", 1:8)
+)
+# Crear tabla LaTeX
+kable(resultados_totales, format = "latex", booktabs = TRUE, digits = 5,
+      caption = "MSE por grupo para distintos valores de $\\alpha$ y $\\gamma$") %>%
+  kable_styling(latex_options = c()) %>%
+  collapse_rows(columns = 1, valign = "middle")  # <- aquí agrupamos alpha cada 4 filas

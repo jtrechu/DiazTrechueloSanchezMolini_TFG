@@ -31,7 +31,7 @@ for (i in 1:length(y)) {
 
 # Determine tau range for x-axis labels
 tau_min_val <- min(l2$taus)       # Minimum tau value
-tau_max_val <- max(l2$taus) - 2   # Maximum tau value minus 2 (for better visualization)
+tau_max_val <- max(l2$taus) + 2   # Maximum tau value + 2 (for better visualization)
 
 # Create the heatmap plot
 ggplot(grid, aes(x = x, y = y, fill = z)) +
